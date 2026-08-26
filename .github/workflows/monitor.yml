@@ -59,12 +59,24 @@ jobs:
           fi
           echo "Telegram test successful"
 
-      - name: Run monitor
+      - name: Run monitor every 30 seconds
         if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.test_telegram == true) }}
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: npm start
+        run: |
+          # GitHub schedule starts every 5 minutes. Run 9 checks over ~4 minutes
+          # so the next scheduled job can take over without intentional overlap.
+          for i in $(seq 1 9); do
+            echo "========================================"
+            echo "Check $i/9 - $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            npm start
+
+            if [ "$i" -lt 9 ]; then
+              echo "Waiting 30 seconds..."
+              sleep 30
+            fi
+          done
 
       - name: Persist monitor state
         if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.test_telegram == true) }}
