@@ -1,11 +1,15 @@
 import fs from 'node:fs/promises';
+import { chromium } from 'playwright';
 
 const API_BASE = 'https://athena.eslite.com/api/v2/search';
 const SEARCH_QUERIES = ['BEYBLADE X', 'BX', 'UX', 'CX', 'TAKARA TOMY', '戰鬥陀螺'];
 const STATE_FILE = 'data/state.json';
+const INTERVAL_MS = Number(process.env.CHECK_INTERVAL_MS || 30000);
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const MODEL_RE = /\b(?:BX|UX|CX)[-－\s]?\d{2,3}\b/i;
+
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 async function loadState() {
   try { return JSON.parse(await fs.readFile(STATE_FILE, 'utf8')); }
@@ -48,21 +52,28 @@ function isBuyable(product) {
     : product.stock > 0 || product.status === 'add_to_shopping_cart';
 }
 
-async function fetchSearch(query) {
+function buildSearchUrl(query) {
   const url = new URL(API_BASE);
   url.searchParams.set('q', `"${query}"`);
   url.searchParams.set('final_price', '0,');
   url.searchParams.set('sort', 'weight');
   url.searchParams.set('size', '100');
   url.searchParams.set('start', '0');
+  return url.toString();
+}
 
-  const response = await fetch(url, { headers: {
-    accept: 'application/json, text/plain, */*',
-    'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131 Safari/537.36',
-    referer: 'https://www.eslite.com/', origin: 'https://www.eslite.com',
-  }});
-  if (!response.ok) throw new Error(`Eslite API [${query}] HTTP ${response.status}: ${await response.text()}`);
-  const json = await response.json();
+async function fetchSearch(page, query) {
+  const response = await page.goto(buildSearchUrl(query), {
+    waitUntil: 'domcontentloaded',
+    timeout: 30000,
+  });
+  const status = response?.status() ?? 0;
+  if (status !== 200) {
+    const preview = (await page.locator('body').innerText().catch(() => '')).slice(0, 160);
+    throw new Error(`HTTP ${status}${preview ? `: ${preview}` : ''}`);
+  }
+  const text = await page.locator('body').innerText();
+  const json = JSON.parse(text);
   const hits = normalizeHits(json);
   console.log(`[SEARCH] "${query}" -> ${hits.length} hit(s)`);
   return hits;
@@ -77,7 +88,7 @@ async function sendTelegram(text) {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text, disable_web_page_preview: true }),
   });
-  if (!response.ok) throw new Error(`Telegram HTTP ${response.status}: ${await response.text()}`);
+  if (!response.ok) throw new Error(`Telegram HTTP ${response.status}`);
   console.log('[Telegram] notification sent');
 }
 
@@ -88,13 +99,22 @@ function notification(type, product) {
     '', product.url].filter(Boolean).join('\n');
 }
 
-async function main() {
-  console.log(`[${new Date().toISOString()}] Checking Eslite Athena API...`);
-
+async function checkOnce(page) {
+  console.log(`\n[${new Date().toISOString()}] Checking Eslite Athena API...`);
   const allHits = [];
+  let successfulSearches = 0;
+
   for (const query of SEARCH_QUERIES) {
-    try { allHits.push(...await fetchSearch(query)); }
-    catch (error) { console.error(`[SEARCH ERROR] ${query}:`, error.message); }
+    try {
+      allHits.push(...await fetchSearch(page, query));
+      successfulSearches++;
+    } catch (error) {
+      console.error(`[SEARCH ERROR] ${query}: ${error.message}`);
+    }
+  }
+
+  if (successfulSearches === 0) {
+    throw new Error('All Eslite searches failed; state was not changed.');
   }
 
   const byId = new Map();
@@ -102,6 +122,7 @@ async function main() {
     const product = normalizeProduct(hit);
     if (product.id) byId.set(product.id, product);
   }
+
   const normalized = [...byId.values()];
   const products = normalized.filter(isTarget);
   console.log(`Unique products across searches: ${normalized.length}`);
@@ -109,15 +130,18 @@ async function main() {
   products.forEach(p => console.log(`[TARGET] ${p.id} ${p.name} stock=${p.stock} status=${p.status}`));
 
   const previous = await loadState();
-  const next = {};
+  const next = { ...previous };
+
   for (const product of products) {
     const old = previous[product.id];
     next[product.id] = product;
+
     if (!old) {
       console.log(`[NEW] ${product.name} stock=${product.stock}`);
       await sendTelegram(notification('NEW', product));
       continue;
     }
+
     if (!isBuyable(old) && isBuyable(product)) {
       console.log(`[RESTOCK] ${product.name} ${old.stock} -> ${product.stock}`);
       await sendTelegram(notification('RESTOCK', product));
@@ -125,7 +149,44 @@ async function main() {
   }
 
   await saveState(next);
-  console.log('Monitor finished.');
+  console.log(`Check finished. Next check in ${Math.round(INTERVAL_MS / 1000)} seconds.`);
 }
 
-main().catch(error => { console.error(error); process.exitCode = 1; });
+async function main() {
+  console.log(`Starting local Eslite monitor. Interval=${INTERVAL_MS}ms`);
+  console.log('Launching installed Google Chrome via Playwright...');
+
+  const browser = await chromium.launch({
+    channel: 'chrome',
+    headless: false,
+  });
+  const context = await browser.newContext();
+  const page = await context.newPage();
+
+  let stopping = false;
+  const stop = async signal => {
+    if (stopping) return;
+    stopping = true;
+    console.log(`\n${signal} received. Closing Chrome...`);
+    await browser.close().catch(() => {});
+    process.exit(0);
+  };
+  process.on('SIGINT', () => void stop('SIGINT'));
+  process.on('SIGTERM', () => void stop('SIGTERM'));
+
+  while (!stopping) {
+    const started = Date.now();
+    try {
+      await checkOnce(page);
+    } catch (error) {
+      console.error(`[CHECK ERROR] ${error.message}`);
+    }
+    const wait = Math.max(1000, INTERVAL_MS - (Date.now() - started));
+    await sleep(wait);
+  }
+}
+
+main().catch(error => {
+  console.error('[FATAL]', error);
+  process.exitCode = 1;
+});
