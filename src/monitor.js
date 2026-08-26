@@ -93,10 +93,18 @@ async function sendTelegram(text) {
 }
 
 function notification(type, product) {
-  const title = type === 'NEW' ? '🚨 誠品發現新的戰鬥陀螺商品' : '🔥 誠品戰鬥陀螺補貨';
-  return [title, '', product.name, product.price ? `售價：NT$${product.price}` : '',
-    product.stock !== null ? `庫存：${product.stock}` : '', product.status ? `狀態：${product.status}` : '',
-    '', product.url].filter(Boolean).join('\n');
+  const model = product.name.match(MODEL_RE)?.[0]?.replace(/[－\s]/g, '-')?.toUpperCase() ?? 'BEYBLADE X';
+  const title = type === 'NEW' ? '🚨 誠品戰鬥陀螺上架！' : '🔥 誠品戰鬥陀螺補貨！';
+  return [
+    title,
+    '',
+    `🎯 ${model}  ${product.name}`,
+    product.price ? `💰 售價：NT$${product.price}` : '',
+    product.stock !== null ? `📦 庫存：${product.stock}` : '',
+    '',
+    '🛒 立即購買',
+    product.url,
+  ].filter(Boolean).join('\n');
 }
 
 async function checkOnce(page) {
