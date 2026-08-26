@@ -2,6 +2,12 @@ name: Eslite Beyblade Monitor
 
 on:
   workflow_dispatch:
+    inputs:
+      test_telegram:
+        description: 'Send Telegram test notification only'
+        required: true
+        default: false
+        type: boolean
   schedule:
     - cron: '*/5 * * * *'
 
@@ -26,13 +32,44 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Test Telegram
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.test_telegram == true }}
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
+            echo "ERROR: TELEGRAM_BOT_TOKEN secret is empty or missing"
+            exit 1
+          fi
+          if [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "ERROR: TELEGRAM_CHAT_ID secret is empty or missing"
+            exit 1
+          fi
+
+          RESPONSE=$(curl -sS -w '\n%{http_code}' -X POST \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -H 'Content-Type: application/json' \
+            --data "{\"chat_id\":\"${TELEGRAM_CHAT_ID}\",\"text\":\"🧪 誠品戰鬥陀螺監控測試成功\\nGitHub Actions → Telegram 連線正常\",\"disable_web_page_preview\":true}")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          BODY=$(echo "$RESPONSE" | sed '$d')
+          echo "Telegram HTTP status: $HTTP_CODE"
+          echo "Telegram response: $BODY"
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            exit 1
+          fi
+
       - name: Run monitor
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.test_telegram == true) }}
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: npm start
 
       - name: Persist monitor state
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.test_telegram == true) }}
         run: |
           if git diff --quiet -- data/state.json; then
             echo "No state changes"
