@@ -47,19 +47,17 @@ jobs:
             exit 1
           fi
 
-          RESPONSE=$(curl -sS -w '\n%{http_code}' -X POST \
+          HTTP_CODE=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
             "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -H 'Content-Type: application/json' \
             --data "{\"chat_id\":\"${TELEGRAM_CHAT_ID}\",\"text\":\"🧪 誠品戰鬥陀螺監控測試成功\\nGitHub Actions → Telegram 連線正常\",\"disable_web_page_preview\":true}")
 
-          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
-          BODY=$(echo "$RESPONSE" | sed '$d')
           echo "Telegram HTTP status: $HTTP_CODE"
-          echo "Telegram response: $BODY"
-
           if [ "$HTTP_CODE" != "200" ]; then
+            echo "ERROR: Telegram test failed"
             exit 1
           fi
+          echo "Telegram test successful"
 
       - name: Run monitor
         if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.test_telegram == true) }}
