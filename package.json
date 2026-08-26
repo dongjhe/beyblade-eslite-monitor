@@ -1,0 +1,13 @@
+{
+  "name": "beyblade-eslite-monitor",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Monitor Eslite Athena API for BEYBLADE X products and notify via Telegram",
+  "type": "module",
+  "scripts": {
+    "start": "node src/monitor.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
