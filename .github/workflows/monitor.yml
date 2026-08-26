@@ -1,39 +1,25 @@
-name: Eslite Beyblade Monitor
+name: Eslite Beyblade Telegram Test
 
 on:
   workflow_dispatch:
     inputs:
       test_telegram:
-        description: 'Send Telegram test notification only'
+        description: 'Send Telegram test notification'
         required: true
-        default: false
+        default: true
         type: boolean
-  schedule:
-    - cron: '*/5 * * * *'
 
 permissions:
-  contents: write
-
-concurrency:
-  group: eslite-beyblade-monitor
-  cancel-in-progress: false
+  contents: read
 
 jobs:
-  monitor:
+  telegram-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 2
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
       - name: Test Telegram
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.test_telegram == true }}
+        if: ${{ inputs.test_telegram == true }}
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -50,7 +36,7 @@ jobs:
           HTTP_CODE=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
             "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -H 'Content-Type: application/json' \
-            --data "{\"chat_id\":\"${TELEGRAM_CHAT_ID}\",\"text\":\"🧪 誠品戰鬥陀螺監控測試成功\\nGitHub Actions → Telegram 連線正常\",\"disable_web_page_preview\":true}")
+            --data "{\"chat_id\":\"${TELEGRAM_CHAT_ID}\",\"text\":\"🧪 誠品戰鬥陀螺 Telegram 測試成功\",\"disable_web_page_preview\":true}")
 
           echo "Telegram HTTP status: $HTTP_CODE"
           if [ "$HTTP_CODE" != "200" ]; then
@@ -58,35 +44,3 @@ jobs:
             exit 1
           fi
           echo "Telegram test successful"
-
-      - name: Run monitor every 30 seconds
-        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.test_telegram == true) }}
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          # GitHub schedule starts every 5 minutes. Run 9 checks over ~4 minutes
-          # so the next scheduled job can take over without intentional overlap.
-          for i in $(seq 1 9); do
-            echo "========================================"
-            echo "Check $i/9 - $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-            npm start
-
-            if [ "$i" -lt 9 ]; then
-              echo "Waiting 30 seconds..."
-              sleep 30
-            fi
-          done
-
-      - name: Persist monitor state
-        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.test_telegram == true) }}
-        run: |
-          if git diff --quiet -- data/state.json; then
-            echo "No state changes"
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/state.json
-          git commit -m "chore: update Eslite monitor state"
-          git push
