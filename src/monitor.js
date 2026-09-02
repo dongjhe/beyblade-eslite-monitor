@@ -118,6 +118,9 @@ async function checkOnce(page) {
       successfulSearches++;
     } catch (error) {
       console.error(`[SEARCH ERROR] ${query}: ${error.message}`);
+      // A closed browser/page cannot recover within this check. Abort immediately
+      // so the main loop can recreate Chrome instead of logging the same error 6 times.
+      if (isBrowserClosedError(error)) throw error;
     }
   }
 
@@ -160,23 +163,53 @@ async function checkOnce(page) {
   console.log(`Check finished. Next check in ${Math.round(INTERVAL_MS / 1000)} seconds.`);
 }
 
-async function main() {
-  console.log(`Starting local Eslite monitor. Interval=${INTERVAL_MS}ms`);
-  console.log('Launching installed Google Chrome via Playwright...');
+function isBrowserClosedError(error) {
+  const message = String(error?.message ?? error ?? '').toLowerCase();
+  return message.includes('target page, context or browser has been closed') ||
+    message.includes('browser has been closed') ||
+    message.includes('page has been closed') ||
+    message.includes('context has been closed') ||
+    message.includes('target closed') ||
+    message.includes('browser closed');
+}
 
+async function createBrowserSession() {
+  console.log('[BROWSER] Launching installed Google Chrome via Playwright...');
   const browser = await chromium.launch({
     channel: 'chrome',
     headless: false,
   });
   const context = await browser.newContext();
   const page = await context.newPage();
+  browser.on('disconnected', () => {
+    console.error('[BROWSER] Chrome disconnected. It will be restarted automatically.');
+  });
+  console.log('[BROWSER] Chrome ready.');
+  return { browser, context, page };
+}
 
+async function closeBrowserSession(session) {
+  if (!session) return;
+  await session.page?.close().catch(() => {});
+  await session.context?.close().catch(() => {});
+  await session.browser?.close().catch(() => {});
+}
+
+function browserSessionAlive(session) {
+  return Boolean(session?.browser?.isConnected() && session?.page && !session.page.isClosed());
+}
+
+async function main() {
+  console.log(`Starting local Eslite monitor. Interval=${INTERVAL_MS}ms`);
+
+  let session = null;
   let stopping = false;
+
   const stop = async signal => {
     if (stopping) return;
     stopping = true;
     console.log(`\n${signal} received. Closing Chrome...`);
-    await browser.close().catch(() => {});
+    await closeBrowserSession(session);
     process.exit(0);
   };
   process.on('SIGINT', () => void stop('SIGINT'));
@@ -184,11 +217,34 @@ async function main() {
 
   while (!stopping) {
     const started = Date.now();
+
     try {
-      await checkOnce(page);
+      if (!browserSessionAlive(session)) {
+        if (session) console.log('[BROWSER] Session is unavailable. Reconnecting...');
+        await closeBrowserSession(session);
+        session = await createBrowserSession();
+      }
+
+      await checkOnce(session.page);
     } catch (error) {
       console.error(`[CHECK ERROR] ${error.message}`);
+
+      if (isBrowserClosedError(error) || !browserSessionAlive(session)) {
+        console.log('[BROWSER] Broken Chrome session detected. Reconnecting...');
+        await closeBrowserSession(session);
+        session = null;
+
+        if (!stopping) {
+          try {
+            session = await createBrowserSession();
+            console.log('[BROWSER] Reconnected successfully.');
+          } catch (reconnectError) {
+            console.error(`[BROWSER RECONNECT ERROR] ${reconnectError.message}`);
+          }
+        }
+      }
     }
+
     const wait = Math.max(1000, INTERVAL_MS - (Date.now() - started));
     await sleep(wait);
   }
