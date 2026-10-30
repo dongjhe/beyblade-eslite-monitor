@@ -23,41 +23,41 @@ async function saveState(products) {
 }
 
 async function collectProducts(page) {
-  const response = await page.goto(PAGE_URL.split('#')[0], { waitUntil: 'domcontentloaded', timeout: 30000 });
-  if (response?.status() !== 200) throw new Error('Exhibition HTTP ' + response?.status());
-  // The hash is a navigation anchor, not a server-side filter.
-  // Locate the actual section heading; never scan all product cards on the page.
-  await page.waitForFunction(() => {
-    const headings = [...document.querySelectorAll('h1,h2,h3,h4,h5,h6')];
-    return headings.some(h => /BEYBLADE\s*X.*強化組/i.test(h.textContent || ''));
-  }, { timeout: 15000 }).catch(() => {});
-  const result = await page.evaluate(() => {
-    const heading = [...document.querySelectorAll('h1,h2,h3,h4,h5,h6')]
-      .find(h => /BEYBLADE\s*X.*強化組/i.test(h.textContent || ''));
-    if (!heading) return { error: 'Strengthening section heading not found' };
-    const level = Number(heading.tagName.slice(1));
-    const items = new Map();
-    // Traverse forward until the next heading at the same or higher level.
-    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
-    walker.currentNode = heading;
-    let node;
-    while ((node = walker.nextNode())) {
-      if (/^H[1-6]$/.test(node.tagName) && Number(node.tagName.slice(1)) <= level) break;
-      if (node.tagName !== 'A') continue;
-      const href = node.getAttribute('href') || '';
+  const response = await page.goto(PAGE_URL.split('#')[0], {
+    waitUntil: 'domcontentloaded',
+    timeout: 30000,
+  });
+  if (response?.status() !== 200) {
+    throw new Error('Exhibition HTTP ' + response?.status());
+  }
+
+  // Eslite renders the section asynchronously; wait for its actual container and cards.
+  await page.locator('#sidebar-4-1 .exhibit-card a[href*="/product/"]').first()
+    .waitFor({ state: 'attached', timeout: 20000 });
+
+  const products = await page.locator('#sidebar-4-1 .exhibit-card').evaluateAll(cards => {
+    const byId = new Map();
+    for (const card of cards) {
+      const anchor = card.querySelector('a[href*="/product/"]');
+      const href = anchor?.getAttribute('href') || '';
       const match = href.match(/\/product\/(\d+)/);
       if (!match) continue;
-      const card = node.closest('article,li,[class*="product"],[class*="card"]') || node;
-      const name = (node.getAttribute('title') || node.getAttribute('aria-label') ||
-        card.querySelector('h3,h4,[class*="name"],[class*="title"]')?.textContent ||
-        node.textContent || node.querySelector('img')?.alt || '').trim().replace(/\s+/g, ' ');
-      items.set(match[1], { id: match[1], name: name || 'BEYBLADE X 商品', url: new URL(href, location.origin).href });
+      const desc = card.querySelector('.desc');
+      const name = (desc?.getAttribute('title') || desc?.textContent ||
+        card.querySelector('img')?.alt || '').trim().replace(/\s+/g, ' ');
+      byId.set(match[1], {
+        id: match[1],
+        name: name || 'BEYBLADE X 商品',
+        url: new URL(href, location.origin).href,
+      });
     }
-    return { products: [...items.values()] };
+    return [...byId.values()];
   });
-  if (result.error) throw new Error(result.error);
-  if (!result.products?.length) throw new Error('No products found in strengthening section; preserving state');
-  return result.products;
+
+  if (!products.length) {
+    throw new Error('No products found in #sidebar-4-1; preserving state');
+  }
+  return products;
 }
 
 async function sendTelegram(product) {
