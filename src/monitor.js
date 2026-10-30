@@ -35,24 +35,40 @@ async function collectProducts(page) {
   await page.locator('#sidebar-4-1 .exhibit-card a[href*="/product/"]').first()
     .waitFor({ state: 'attached', timeout: 20000 });
 
-  const products = await page.locator('#sidebar-4-1 .exhibit-card').evaluateAll(cards => {
-    const byId = new Map();
-    for (const card of cards) {
-      const anchor = card.querySelector('a[href*="/product/"]');
-      const href = anchor?.getAttribute('href') || '';
-      const match = href.match(/\/product\/(\d+)/);
-      if (!match) continue;
-      const desc = card.querySelector('.desc');
-      const name = (desc?.getAttribute('title') || desc?.textContent ||
-        card.querySelector('img')?.alt || '').trim().replace(/\s+/g, ' ');
-      byId.set(match[1], {
-        id: match[1],
-        name: name || 'BEYBLADE X 商品',
-        url: new URL(href, location.origin).href,
-      });
-    }
-    return [...byId.values()];
-  });
+  // Wait until the asynchronously rendered product IDs stop changing.
+  // Do not accept the first card as proof that the section has finished loading.
+  let lastSignature = '';
+  let stableRounds = 0;
+  let products = [];
+  const deadline = Date.now() + 20000;
+  while (Date.now() < deadline) {
+    products = await page.locator('#sidebar-4-1 .exhibit-card').evaluateAll(cards => {
+      const byId = new Map();
+      for (const card of cards) {
+        const anchor = card.querySelector('a[href*="/product/"]');
+        const href = anchor?.getAttribute('href') || '';
+        const match = href.match(/\/product\/(\d+)/);
+        if (!match) continue;
+        const desc = card.querySelector('.desc');
+        const name = (desc?.getAttribute('title') || desc?.textContent ||
+          card.querySelector('img')?.alt || '').trim().replace(/\s+/g, ' ');
+        byId.set(match[1], {
+          id: match[1],
+          name: name || 'BEYBLADE X 商品',
+          url: new URL(href, location.origin).href,
+        });
+      }
+      return [...byId.values()];
+    });
+  
+    const signature = products.map(p => p.id).sort().join(',');
+    if (signature && signature === lastSignature) stableRounds++;
+    else stableRounds = 0;
+    if (stableRounds >= 4) break;
+    lastSignature = signature;
+    await sleep(1000);
+  }
+  console.log('[SECTION] Stable product count:', products.length);
 
   if (!products.length) {
     throw new Error('No products found in #sidebar-4-1; preserving state');
