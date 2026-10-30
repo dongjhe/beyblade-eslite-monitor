@@ -77,16 +77,36 @@ async function collectProducts(page) {
 }
 
 async function sendTelegram(product) {
-  const text = ['🚨 誠品 BEYBLADE X 強化組新增商品！', '', '🎯 ' + product.name, '', '🛒 ' + product.url].join('\n');
+  const url = 'https://www.eslite.com/product/' + encodeURIComponent(product.id);
+  const message = [
+    '🚨 誠品 BEYBLADE X 強化組新增商品！',
+    '',
+    '🆔 商品 ID：' + product.id,
+    '🎯 商品名稱：' + product.name,
+    '',
+    '🛒 點選商品連結：',
+    url,
+  ].join('\n');
   if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
     console.warn('[TELEGRAM] Missing BOT_TOKEN or CHAT_ID; no notification sent');
     return false;
   }
   const response = await fetch('https://api.telegram.org/bot' + TELEGRAM_BOT_TOKEN + '/sendMessage', {
-    method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text, disable_web_page_preview: true }),
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      chat_id: TELEGRAM_CHAT_ID,
+      text: message,
+      disable_web_page_preview: true,
+      reply_markup: {
+        inline_keyboard: [[{ text: '🛒 開啟誠品商品頁', url }]],
+      },
+    }),
   });
   if (!response.ok) throw new Error('Telegram HTTP ' + response.status);
+  const result = await response.json();
+  if (!result.ok) throw new Error('Telegram API error: ' + (result.description || 'unknown'));
+  console.log('[TELEGRAM] Sent new product:', product.id);
   return true;
 }
 
